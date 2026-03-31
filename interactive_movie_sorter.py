@@ -3,20 +3,14 @@ import re
 import sys
 # pip install imdbpy beautifulsoup4 requests lxml
 from imdb import Cinemagoer
-import readline
-import glob
+## readline and glob removed for compatibility with IPython and base Python
 import requests
 from bs4 import BeautifulSoup
 import json
 import time
 
-# Enable tab completion for folder paths
-def complete_path(text, state):
-    return (glob.glob(text + '*') + [None])[state]
 
-readline.set_completer_delims('')
-readline.parse_and_bind("tab: complete")
-readline.set_completer(complete_path)
+## Tab completion removed for compatibility with IPython and base Python
 
 # File extension categories
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg', '.m2ts', '.ts', '.vob', '.ogv', '.3gp'}
@@ -424,8 +418,9 @@ def find_dvd_folders(folder_path):
     
     return dvd_folders
 
-# Get folder path from user with auto-completion
-folder_path = input("Please enter the folder path (tab to auto-complete): ").strip()
+
+# Get folder path from user (no tab completion)
+folder_path = input("Please enter the folder path: ").strip()
 
 # Remove surrounding quotes if present (single or double)
 folder_path = folder_path.strip('"\'')
@@ -638,11 +633,14 @@ for file in visible_files:
     if not movie_data:
         print(f"✗ Could not find automatic match for '{movie_name}'")
         imdb_id = input("  Enter IMDb ID (e.g., tt27490099) or press Enter to skip: ").strip()
+
         if imdb_id:
             try:
                 imdb_id = imdb_id.replace('tt', '')
                 ia = Cinemagoer()
+                print(f"  DEBUG: Fetching IMDb ID: {imdb_id}")
                 movie_data = ia.get_movie(imdb_id)
+                print(f"  DEBUG: movie_data fetched: {movie_data}")
                 # Try web scraping for director
                 time.sleep(0.5)
                 scraped_directors = scrape_director_from_imdb(imdb_id)
@@ -650,7 +648,9 @@ for file in visible_files:
                     movie_data.data['director'] = [{'name': name} for name in scraped_directors]
                     print(f"  → Scraped director info: {', '.join(scraped_directors)}")
             except Exception as e:
+                import traceback
                 print(f"  Error fetching IMDb ID: {e}")
+                traceback.print_exc()
                 movie_data = None
 
     if movie_data:
