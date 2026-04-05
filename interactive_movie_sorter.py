@@ -8,6 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import time
+import urllib.parse
 
 
 ## Tab completion removed for compatibility with IPython and base Python
@@ -18,6 +19,168 @@ SUBTITLE_EXTENSIONS = {'.srt', '.sub', '.ass', '.ssa', '.vtt', '.idx'}
 DVD_EXTENSIONS = {'.ifo', '.bup', '.vob'}
 AUTO_DELETE_EXTENSIONS = {'.nfo', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.txt', '.xml', '.db', '.url'}
 AUDIO_EXTENSIONS = {'.mp3', '.flac', '.wav', '.aac', '.ogg', '.m4a', '.wma'}
+RELEASE_GROUP_PATTERNS = [
+    r'-RARBG$', r'-YTS$', r'-ETRG$', r'-EVO$', r'-FGT$', r'-SPARKS$', r'-GECKOS$',
+    r'-Ganool$', r'-AlphaDL$', r'-PSA$', r'-Pahe$', r'-MkvCage$', r'-ShAaNiG$'
+]
+
+
+class SimpleMovieData(dict):
+    def __init__(self, imdb_id=None, title=None, year=None, directors=None):
+        super().__init__()
+        self.movieID = imdb_id.replace('tt', '') if imdb_id else None
+        self.data = self
+        if title:
+            self['title'] = title
+        if year:
+            self['year'] = year
+        if directors:
+            self['director'] = [{'name': name} for name in directors]
+
+
+def build_movie_data(imdb_id=None, title=None, year=None, directors=None):
+    """Build a movie-data object compatible with the rest of the script."""
+    return SimpleMovieData(imdb_id=imdb_id, title=title, year=year, directors=directors or ['Unknown'])
+
+
+def has_usable_movie_metadata(movie_data):
+    """Return True when movie data contains enough metadata to organize a file."""
+    return bool(movie_data and movie_data.get('title') and movie_data.get('year'))
+
+
+def prompt_for_manual_movie_data(imdb_id=None, default_title="", default_year=None):
+    """Prompt the user for movie metadata when IMDb lookup is unavailable."""
+    print("  IMDb lookup did not return usable metadata.")
+    print("  Using filename metadata where available so the file can still be organized.")
+
+    if default_title:
+        title = default_title
+        print(f"  Title: {title}")
+    else:
+        while True:
+            title = input("  Title: ").strip()
+            if title:
+                break
+            print("  Title is required.")
+
+    if default_year:
+        year = int(default_year)
+        print(f"  Year: {year}")
+    else:
+        while True:
+            year_input = input("  Year: ").strip()
+            if year_input.isdigit() and len(year_input) == 4:
+                year = int(year_input)
+                break
+            print("  Enter a 4-digit year.")
+
+    director_input = input("  Director name(s), comma-separated [Unknown]: ").strip()
+    directors = [name.strip() for name in director_input.split(',') if name.strip()] or ['Unknown']
+
+    return SimpleMovieData(imdb_id=imdb_id, title=title, year=year, directors=directors)
+
+
+def fetch_movie_by_imdb_id(imdb_id, default_title="", default_year=None):
+    """Fetch movie metadata by IMDb ID, falling back to manual entry when needed."""
+    normalized_imdb_id = imdb_id.replace('tt', '').strip()
+
+    movie_data = get_movie_data_from_wikidata(normalized_imdb_id, fallback_title=default_title, fallback_year=default_year)
+    if has_usable_movie_metadata(movie_data):
+        return movie_data
+
+    return prompt_for_manual_movie_data(
+        imdb_id=normalized_imdb_id,
+        default_title=default_title,
+        default_year=default_year,
+    )
+
+
+def search_imdb_suggestions(movie_name, year=None):
+    """Search IMDb's public suggestion endpoint for movie matches."""
+    try:
+        query = movie_name.strip().lower()
+        if not query:
+            return []
+
+        first_char = next((char for char in query if char.isalnum()), 'x')
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://v2.sg.media-imdb.com/suggestion/{first_char}/{encoded_query}.json"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }
+
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        candidates = []
+
+        for item in payload.get('d', []):
+            if item.get('qid') != 'movie' and item.get('q') != 'feature':
+                continue
+            item_year = item.get('y')
+            if year and item_year and str(item_year) != str(year):
+                continue
+            candidates.append(item)
+
+        if candidates or not year:
+            return candidates
+
+        for item in payload.get('d', []):
+            if item.get('qid') == 'movie' or item.get('q') == 'feature':
+                candidates.append(item)
+        return candidates
+    except Exception as e:
+        print(f"  Error searching IMDb suggestions: {e}")
+        return []
+
+
+def get_movie_data_from_wikidata(imdb_id, fallback_title=None, fallback_year=None):
+    """Fetch title, year, and director metadata from Wikidata using IMDb ID."""
+    try:
+        imdb_id = imdb_id.replace('tt', '').strip()
+        query = """
+SELECT ?filmLabel ?directorLabel ?publicationDate WHERE {
+  ?film wdt:P345 \"tt%s\".
+  OPTIONAL { ?film wdt:P57 ?director. }
+  OPTIONAL { ?film wdt:P577 ?publicationDate. }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language \"en\". }
+}
+""" % imdb_id
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }
+        response = requests.get(
+            'https://query.wikidata.org/sparql',
+            params={'format': 'json', 'query': query},
+            headers=headers,
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+        bindings = data.get('results', {}).get('bindings', [])
+        if not bindings:
+            return None
+
+        title = fallback_title
+        year = int(fallback_year) if fallback_year else None
+        directors = []
+
+        for row in bindings:
+            if not title and 'filmLabel' in row:
+                title = row['filmLabel']['value']
+            if not year and 'publicationDate' in row:
+                year = int(row['publicationDate']['value'][:4])
+            if 'directorLabel' in row:
+                director_name = row['directorLabel']['value']
+                if director_name not in directors:
+                    directors.append(director_name)
+
+        return build_movie_data(imdb_id=imdb_id, title=title, year=year, directors=directors or ['Unknown'])
+    except Exception as e:
+        print(f"  Error fetching Wikidata metadata: {e}")
+        return None
 
 # Function to clean up extra files in a directory
 def cleanup_directory(directory_path, auto_delete=True):
@@ -112,6 +275,13 @@ def clean_movie_name(file_name):
     ]
     for pattern in patterns_to_remove:
         movie_name = re.sub(pattern, '', movie_name, flags=re.IGNORECASE)
+
+    for pattern in RELEASE_GROUP_PATTERNS:
+        movie_name = re.sub(pattern, '', movie_name, flags=re.IGNORECASE)
+
+    # Remove bracketed release metadata.
+    movie_name = re.sub(r'\[[^\]]*\]', ' ', movie_name)
+    movie_name = re.sub(r'\([^\)]*(?:rarbg|yts|x264|x265|bluray|webrip|web-dl)[^\)]*\)', ' ', movie_name, flags=re.IGNORECASE)
     
     # Replace dots and underscores with spaces
     movie_name = re.sub(r'[_\.]', ' ', movie_name)
@@ -198,54 +368,23 @@ def find_imdb_id_from_web(movie_name, year=None):
 
 # Function to get movie data from IMDb
 def get_movie_data(movie_name, year=None):
-    ia = Cinemagoer()
     try:
-        # Primary: Try web search first (more reliable)
-        print(f"  → Searching IMDb website...")
-        imdb_id = find_imdb_id_from_web(movie_name, year)
-        
-        if imdb_id:
-            movie = ia.get_movie(imdb_id)
-            # Try web scraping for director
-            time.sleep(0.5)
-            scraped_directors = scrape_director_from_imdb(imdb_id)
-            if scraped_directors:
-                movie.data['director'] = [{'name': name} for name in scraped_directors]
-            return movie
-        
-        # Fallback: Try Cinemagoer search
-        print(f"  → Trying Cinemagoer API...")
-        search_results = ia.search_movie(movie_name)
-        
-        if search_results:
-            # If year is provided, try to find matching movie
-            if year:
-                for result in search_results[:10]:
-                    try:
-                        movie = ia.get_movie(result.movieID)
-                        if movie.get('year') == int(year):
-                            # If no director info from API, try web scraping
-                            if not movie.get('director'):
-                                time.sleep(0.5)
-                                scraped_directors = scrape_director_from_imdb(movie.movieID)
-                                if scraped_directors:
-                                    movie.data['director'] = [{'name': name} for name in scraped_directors]
-                            return movie
-                    except:
-                        continue
-            
-            # No year filter, use first result
-            movie = ia.get_movie(search_results[0].movieID)
-            
-            # If no director info from API, try web scraping
-            if not movie.get('director'):
-                time.sleep(0.5)
-                scraped_directors = scrape_director_from_imdb(movie.movieID)
-                if scraped_directors:
-                    movie.data['director'] = [{'name': name} for name in scraped_directors]
-            
-            return movie
-        
+        print(f"  → Searching IMDb suggestions...")
+        suggestions = search_imdb_suggestions(movie_name, year)
+
+        if suggestions:
+            best_match = suggestions[0]
+            imdb_id = best_match.get('id', '').replace('tt', '')
+            suggestion_title = best_match.get('l')
+            suggestion_year = best_match.get('y') or year
+
+            movie_data = get_movie_data_from_wikidata(imdb_id, fallback_title=suggestion_title, fallback_year=suggestion_year)
+            if has_usable_movie_metadata(movie_data):
+                return movie_data
+
+            if suggestion_title and suggestion_year:
+                return build_movie_data(imdb_id=imdb_id, title=suggestion_title, year=int(suggestion_year), directors=['Unknown'])
+
         return None
     except Exception as e:
         print(f"  Error searching IMDb: {e}")
@@ -253,19 +392,7 @@ def get_movie_data(movie_name, year=None):
 
 # Function to get movie data by IMDb ID
 def get_movie_data_by_id(imdb_id):
-    ia = Cinemagoer()
-    imdb_id = imdb_id.replace('tt', '')  # Remove the 'tt' prefix
-    movie = ia.get_movie(imdb_id)
-    
-    # If no director info from API, try web scraping
-    if not movie.get('director'):
-        time.sleep(0.5)  # Be polite to IMDb servers
-        scraped_directors = scrape_director_from_imdb(imdb_id)
-        if scraped_directors:
-            movie.data['director'] = [{'name': name} for name in scraped_directors]
-            print(f"  → Scraped director info: {', '.join(scraped_directors)}")
-    
-    return movie
+    return fetch_movie_by_imdb_id(imdb_id)
 
 # Function to check if a file/folder is already organized
 def is_already_organized(current_path, expected_director, expected_year, expected_title, target_folder_path):
@@ -511,20 +638,7 @@ if dvd_folders:
         
         if not movie_data:
             print(f"✗ Could not find automatic match for '{movie_name}'")
-            imdb_id = input("  Enter IMDb ID (e.g., tt27490099) or press Enter to skip: ").strip()
-            if imdb_id:
-                try:
-                    imdb_id = imdb_id.replace('tt', '')
-                    ia = Cinemagoer()
-                    movie_data = ia.get_movie(imdb_id)
-                    time.sleep(0.5)
-                    scraped_directors = scrape_director_from_imdb(imdb_id)
-                    if scraped_directors:
-                        movie_data.data['director'] = [{'name': name} for name in scraped_directors]
-                        print(f"  → Scraped director info: {', '.join(scraped_directors)}")
-                except Exception as e:
-                    print(f"  Error fetching IMDb ID: {e}")
-                    movie_data = None
+            movie_data = prompt_for_manual_movie_data(default_title=movie_name, default_year=year)
         
         if movie_data:
             imdb_url = f"https://www.imdb.com/title/tt{movie_data.movieID}/"
@@ -552,32 +666,19 @@ if dvd_folders:
                     processed_dvd_folders.add(dvd_folder_root)
                     break
                 elif confirm == 'n' or confirm == 'search':
-                    imdb_id = input("  Enter IMDb ID (e.g., tt27490099) or press Enter to skip: ").strip()
+                    imdb_id = input("  Enter IMDb ID (e.g., tt27490099) or press Enter to edit manually: ").strip()
                     if imdb_id:
-                        try:
-                            imdb_id = imdb_id.replace('tt', '')
-                            ia = Cinemagoer()
-                            movie_data = ia.get_movie(imdb_id)
-                            time.sleep(0.5)
-                            scraped_directors = scrape_director_from_imdb(imdb_id)
-                            if scraped_directors:
-                                movie_data.data['director'] = [{'name': name} for name in scraped_directors]
-                                print(f"  → Scraped director info: {', '.join(scraped_directors)}")
-                            
-                            imdb_url = f"https://www.imdb.com/title/tt{movie_data.movieID}/"
-                            directors = movie_data.get('director', [])
-                            director_str = ', '.join(director['name'] for director in directors) if directors else 'Unknown'
-                            print(f"Found: {movie_data.get('title')} ({movie_data.get('year')}) directed by {director_str}")
-                            print(f"IMDb URL: {imdb_url}")
-                        except Exception as e:
-                            print(f"  Error fetching IMDb ID: {e}")
-                            print(f"⊘ Skipped: {os.path.basename(dvd_folder_root)}")
-                            processed_dvd_folders.add(dvd_folder_root)
-                            break
+                        movie_data = fetch_movie_by_imdb_id(imdb_id, default_title=movie_name, default_year=year)
+                        imdb_url = f"https://www.imdb.com/title/tt{movie_data.movieID}/"
+                        directors = movie_data.get('director', [])
+                        director_str = ', '.join(director['name'] for director in directors) if directors else 'Unknown'
+                        print(f"Found: {movie_data.get('title')} ({movie_data.get('year')}) directed by {director_str}")
+                        print(f"IMDb URL: {imdb_url}")
                     else:
-                        print(f"⊘ Skipped: {os.path.basename(dvd_folder_root)}")
-                        processed_dvd_folders.add(dvd_folder_root)
-                        break
+                        movie_data = prompt_for_manual_movie_data(default_title=movie_name, default_year=year)
+                        directors = movie_data.get('director', [])
+                        director_str = ', '.join(director['name'] for director in directors) if directors else 'Unknown'
+                        print(f"Found: {movie_data.get('title')} ({movie_data.get('year')}) directed by {director_str}")
                 else:
                     print("  Please enter 'y' (yes), 'n' (no/search), or press Enter to skip")
         else:
@@ -632,26 +733,7 @@ for file in visible_files:
     # If not found automatically, ask user for IMDb ID
     if not movie_data:
         print(f"✗ Could not find automatic match for '{movie_name}'")
-        imdb_id = input("  Enter IMDb ID (e.g., tt27490099) or press Enter to skip: ").strip()
-
-        if imdb_id:
-            try:
-                imdb_id = imdb_id.replace('tt', '')
-                ia = Cinemagoer()
-                print(f"  DEBUG: Fetching IMDb ID: {imdb_id}")
-                movie_data = ia.get_movie(imdb_id)
-                print(f"  DEBUG: movie_data fetched: {movie_data}")
-                # Try web scraping for director
-                time.sleep(0.5)
-                scraped_directors = scrape_director_from_imdb(imdb_id)
-                if scraped_directors:
-                    movie_data.data['director'] = [{'name': name} for name in scraped_directors]
-                    print(f"  → Scraped director info: {', '.join(scraped_directors)}")
-            except Exception as e:
-                import traceback
-                print(f"  Error fetching IMDb ID: {e}")
-                traceback.print_exc()
-                movie_data = None
+        movie_data = prompt_for_manual_movie_data(default_title=movie_name, default_year=year)
 
     if movie_data:
         imdb_url = f"https://www.imdb.com/title/tt{movie_data.movieID}/"
@@ -677,34 +759,19 @@ for file in visible_files:
                 print(f"✓ Organized: {os.path.basename(file)}")
                 break
             elif confirm == 'n' or confirm == 'search':
-                # Ask for IMDb ID
-                imdb_id = input("  Enter IMDb ID (e.g., tt27490099) or press Enter to skip: ").strip()
+                imdb_id = input("  Enter IMDb ID (e.g., tt27490099) or press Enter to edit manually: ").strip()
                 if imdb_id:
-                    try:
-                        imdb_id = imdb_id.replace('tt', '')
-                        ia = Cinemagoer()
-                        movie_data = ia.get_movie(imdb_id)
-                        # Try web scraping for director
-                        time.sleep(0.5)
-                        scraped_directors = scrape_director_from_imdb(imdb_id)
-                        if scraped_directors:
-                            movie_data.data['director'] = [{'name': name} for name in scraped_directors]
-                            print(f"  → Scraped director info: {', '.join(scraped_directors)}")
-                        
-                        # Show new movie info and ask again
-                        imdb_url = f"https://www.imdb.com/title/tt{movie_data.movieID}/"
-                        directors = movie_data.get('director', [])
-                        director_str = ', '.join(director['name'] for director in directors) if directors else 'Unknown'
-                        print(f"Found: {movie_data.get('title')} ({movie_data.get('year')}) directed by {director_str}")
-                        print(f"IMDb URL: {imdb_url}")
-                        # Loop will ask for confirmation again
-                    except Exception as e:
-                        print(f"  Error fetching IMDb ID: {e}")
-                        print(f"⊘ Skipped: {original_file_name}")
-                        break
+                    movie_data = fetch_movie_by_imdb_id(imdb_id, default_title=movie_name, default_year=year)
+                    imdb_url = f"https://www.imdb.com/title/tt{movie_data.movieID}/"
+                    directors = movie_data.get('director', [])
+                    director_str = ', '.join(director['name'] for director in directors) if directors else 'Unknown'
+                    print(f"Found: {movie_data.get('title')} ({movie_data.get('year')}) directed by {director_str}")
+                    print(f"IMDb URL: {imdb_url}")
                 else:
-                    print(f"⊘ Skipped: {original_file_name}")
-                    break
+                    movie_data = prompt_for_manual_movie_data(default_title=movie_name, default_year=year)
+                    directors = movie_data.get('director', [])
+                    director_str = ', '.join(director['name'] for director in directors) if directors else 'Unknown'
+                    print(f"Found: {movie_data.get('title')} ({movie_data.get('year')}) directed by {director_str}")
             else:
                 print("  Please enter 'y' (yes), 'n' (no/search), or press Enter to skip")
     else:
