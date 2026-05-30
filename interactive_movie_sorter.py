@@ -693,44 +693,43 @@ print("Processing individual movie files...")
 print(f"{'='*60}\n")
 
 # Iterate through each file in the folder
+
+# Track files that have been moved/organized to avoid reprocessing
+processed_files = set()
+
 for file in visible_files:
+    # Skip if file was already processed (moved/renamed)
+    if file in processed_files:
+        continue
     original_file_name = os.path.basename(file)
-    
+
     # Check if file is inside a DVD folder structure
     dvd_folder_root = get_dvd_folder_root(file) if is_inside_dvd_folder(file) else None
-    
     if dvd_folder_root:
-        # Skip files inside DVD folders that have already been processed
         if dvd_folder_root in processed_dvd_folders:
             continue
-        # If DVD folder not yet processed, skip this file (it will be in the DVD scan)
         continue
-    
-    # Skip if file no longer exists (might have been deleted during cleanup)
+
+    # Skip if file no longer exists (might have been deleted or moved)
     if not os.path.exists(file):
         continue
-    
+
     movie_name, year = clean_movie_name(original_file_name)
-    
-    # Skip if movie name is empty
     if not movie_name or len(movie_name) < 2:
         print(f"\n{'='*60}")
         print(f"Original file: {original_file_name}")
         print(f"✗ Skipped: Could not extract valid movie name")
         continue
-    
-    # Clean up extra files in the parent directory first
+
     parent_dir = os.path.dirname(file)
     print(f"\n{'='*60}")
     print(f"Original file: {original_file_name}")
     print(f"Cleaning up extra files in directory...")
     cleanup_directory(parent_dir, auto_delete=True)
-    
-    print(f"Searching for movie: {movie_name}" + (f" ({year})" if year else ""))
 
+    print(f"Searching for movie: {movie_name}" + (f" ({year})" if year else ""))
     movie_data = get_movie_data(movie_name, year)
 
-    # If not found automatically, ask user for IMDb ID
     if not movie_data:
         print(f"✗ Could not find automatic match for '{movie_name}'")
         movie_data = prompt_for_manual_movie_data(default_title=movie_name, default_year=year)
@@ -741,8 +740,7 @@ for file in visible_files:
         director_str = ', '.join(director['name'] for director in directors) if directors else 'Unknown'
         print(f"Found: {movie_data.get('title')} ({movie_data.get('year')}) directed by {director_str}")
         print(f"IMDb URL: {imdb_url}")
-        
-        # Check if already organized
+
         director_names = ', '.join(director['name'] for director in directors) if directors else "Unknown"
         if is_already_organized(file, director_names, movie_data.get('year'), movie_data.get('title'), folder_path):
             print(f"✓ This file appears to be already organized correctly!")
@@ -750,13 +748,13 @@ for file in visible_files:
             if skip_choice == 'y':
                 print(f"⊘ Skipped: {original_file_name}")
                 continue
-        
-        # Confirm with user before organizing
+
         while True:
             confirm = input("  Organize this file? (y/n/search): ").strip().lower()
             if confirm == 'y':
                 organize_movie(file, movie_data, folder_path)
                 print(f"✓ Organized: {os.path.basename(file)}")
+                processed_files.add(file)
                 break
             elif confirm == 'n' or confirm == 'search':
                 imdb_id = input("  Enter IMDb ID (e.g., tt27490099) or press Enter to edit manually: ").strip()
