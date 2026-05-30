@@ -1,3 +1,4 @@
+// FILE REMOVED: No longer needed as per user workflow.
 #!/usr/bin/env python3
 """
 Merge folders and remove the source folder after successful rsync completion.

@@ -1,96 +1,129 @@
 
+
 # Film File Organizer
 
-This repository contains two Python scripts that help you automatically sort and rename your collection of film files by their **Director**, **Release Year**, and **Title** using data from the IMDb database.
+![Python](https://img.shields.io/badge/Python-3.7%2B-blue?logo=python)
+![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+> Effortlessly organize and clean your film collection by director, year, and title using IMDb data. Includes tools for merging, quality checking, and more.
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Project Structure](#project-structure)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Automatic Mode](#automatic-mode)
+  - [Interactive Mode](#interactive-mode)
+  - [Merge and Cleanup](#merge-and-cleanup)
+  - [Move and Quality Check](#move-and-quality-check)
+- [Examples](#examples)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+- [Support](#support)
+
+---
+
 
 ## Features
 
-- **Automatic File Sorting**: Sorts your film files into directories by `/Director/ReleaseYear - Title/Film File`.
-- **Multi-Format Support**: Works with a variety of film file formats including `.mp4`, `.mkv`, `.avi`, and more.
-- **IMDB Integration**: Fetches relevant movie details (director, title, release year) from the IMDB database to ensure accurate sorting.
-- **File Renaming**: Renames the movie file to its official IMDb title while retaining the original file extension.
-- **Two Modes**: 
-  - **Interactive Mode**: Prompts the user to confirm the IMDb data or provide alternative search input.
-  - **Automatic Mode**: Runs automatically, organizing files without user interaction.
+- **Automatic File Sorting**: Organizes films into `/Director/ReleaseYear - Title/Film File` using IMDb data.
+- **Multi-Format Support**: Handles `.mp4`, `.mkv`, `.avi`, `.mov`, and more.
+- **Subtitle Handling**: Moves and renames `.srt` files alongside videos.
+- **IMDb Integration**: Fetches director, title, and year for accurate sorting.
+- **File Renaming**: Renames files to their official IMDb title.
+- **Interactive & Automatic Modes**: Choose between full automation or manual confirmation.
+- **Merge & Quality Tools**: Merge folders and compare video quality to keep the best version.
 
+
+## Project Structure
+
+- `automatic_movie_sorter.py` — Fully automatic film organizer (IMDb-based)
+- `interactive_movie_sorter.py` — Interactive organizer with manual confirmation
+- `merge_and_cleanup.py` — Merge folders and clean up source after transfer
+- `move_qualitycheck.py` — Compare and move higher-quality video files
 ## Prerequisites
 
-- **Python 3.x**
-- **IMDBpy** (Python package for accessing the IMDB database)
+- Python 3.7 or higher
+- [IMDbPY](https://imdbpy.github.io/)
 
-### Installation of Required Packages
+## Installation
 
-To install the necessary dependencies, run:
+Install dependencies with pip:
 
-```
+```bash
 pip install IMDbPY
 ```
 
+
 ## Usage
-
-### Interactive Mode
-
-In the **Interactive Mode**, the script will:
-
-1. **Search for IMDb Data**: Fetch details for each film file from IMDb.
-2. **Prompt for Confirmation**: Ask the user to confirm the fetched details (title, director, year). The user can input alternative titles or IMDb IDs if needed.
-3. **File Sorting**: Organize the files into directories following the structure: `/Director/ReleaseYear - Title/Film File`.
-4. **File Renaming**: Rename the file based on its IMDb title.
-
-#### Example
-
-Given a folder with the following files:
-
-```
-
-/Film File Organizer
-    ├── /Unsorted
-    │   ├── random_website_1993_sch_list.mkv
-    │   ├── another_telegram_channel_munich2005.mp4
-    │   └── 2017_Dunkirk.avi
-    
-```
-
-After running the script and confirming the details, the structure will be reorganized to:
-
-```
-
-/Film File Organizer
-  ├── /Sorted
-    │   ├── Steven Spielberg
-    │   │   ├── 1993 - Schindler's List
-    │   │   │   └── Schindler's List.mkv
-    │   │   └── 2005 - Munich
-    │   │       └── Munich.mp4
-    │   ├── Quentin Tarantino
-    │   │   ├── 1994 - Pulp Fiction
-    │   │   │   └── PulpFiction.mkv
-    │   │   └── 2009 - Inglourious Basterds
-    │   │       └── Inglourious Basterds.mkv
-    │   └── Christopher Nolan
-    │       ├── 2010 - Inception
-    │       │   └── Inception.mp4
-    │       └── 2017 - Dunkirk
-    │           └── Dunkirk.avi
-    
-```
 
 ### Automatic Mode
 
-In **Automatic Mode**, the script will run without user input, using the first search result from IMDb to sort and rename the files. It:
+Use the automatic organizer for hands-off sorting:
 
-1. **Automatically Searches for IMDb Data**: Uses the file name to search IMDb.
-2. **File Sorting and Renaming**: Organizes and renames the files in the same way as the interactive mode but without confirmation prompts.
+```bash
+python automatic_movie_sorter.py
+```
+You will be prompted for the folder path. The script will:
+- Search IMDb for each video file
+- Create `/Director/Year - Title/` folders
+- Move and rename both video and matching `.srt` subtitle files
 
-### Running the Scripts
+### Interactive Mode
 
-- **Interactive Mode**: Use `interactive_movie_sorter.py` to manually confirm movie data.
-- **Automatic Mode**: Use `automatic_movie_sorter.py` for automatic sorting without prompts.
+Use the interactive organizer for manual confirmation:
 
-## Confirmation Prompt (Interactive Mode)
+```bash
+python interactive_movie_sorter.py
+```
+You can confirm or override IMDb results for each film.
 
-For each film in **Interactive Mode**, the script will display the IMDb data retrieved:
+### Merge and Cleanup
 
+Merge one folder into another and optionally delete the source:
+
+```bash
+python merge_and_cleanup.py
+```
+Edit the script to set your source/destination paths as needed.
+
+### Move and Quality Check
+
+Compare video files in two locations and keep the highest quality:
+
+```bash
+python move_qualitycheck.py
+```
+Requires [mediainfo](https://mediaarea.net/en/MediaInfo) to be installed.
+
+
+## Examples
+
+**Before:**
+```
+Unsorted/
+  random_website_1993_sch_list.mkv
+  another_telegram_channel_munich2005.mp4
+  2017_Dunkirk.avi
+```
+
+**After:**
+```
+Sorted/
+  Steven Spielberg/
+    1993 - Schindler's List/Schindler's List.mkv
+    2005 - Munich/Munich.mp4
+  Christopher Nolan/
+    2017 - Dunkirk/Dunkirk.avi
+```
+
+**Interactive Prompt Example:**
 ```
 Title: Schindler's List
 Director: Steven Spielberg
@@ -98,8 +131,22 @@ Release Year: 1993
 Is this correct? [Y/n]:
 ```
 
-Upon confirmation, the script will sort and rename the file accordingly.
+
+## Troubleshooting
+
+- Ensure you have a stable internet connection for IMDb lookups.
+- If you get errors about missing modules, re-run `pip install IMDbPY`.
+- For video quality checking, install `mediainfo` (e.g., `brew install mediainfo` on macOS).
+- If you encounter permission errors, run the script with appropriate access or move files to a user-writable directory.
+
+## Contributing
+
+Contributions, bug reports, and feature requests are welcome! Please open an issue or submit a pull request.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. If the LICENSE file is missing, please contact the maintainer.
+
+## Support
+
+For help, open an issue on GitHub or contact the repository maintainer.
