@@ -27,7 +27,14 @@ import requests
 from bs4 import BeautifulSoup
 
 # ── Destination folders ───────────────────────────────────────────────────────
-FILMS_ROOT   = "/volume1/Films"
+# Auto-detect: use /Volumes/Films on Mac, /volume1/Films on NAS
+if os.path.exists("/Volumes/Films"):
+    FILMS_ROOT = "/Volumes/Films"
+elif os.path.exists("/volume1/Films"):
+    FILMS_ROOT = "/volume1/Films"
+else:
+    FILMS_ROOT = input("Films root path not found. Enter it manually: ").strip()
+
 AJ_PATH      = os.path.join(FILMS_ROOT, "AJ")
 AMIR_PATH    = os.path.join(FILMS_ROOT, "AmirWatched")
 WATCH_PATH   = os.path.join(FILMS_ROOT, "Not Watched Yet")
@@ -169,7 +176,7 @@ SELECT ?filmLabel ?directorLabel ?publicationDate ?genreLabel WHERE {
             'https://query.wikidata.org/sparql',
             params={'format': 'json', 'query': query},
             headers={'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US,en;q=0.9'},
-            timeout=20
+            timeout=8
         )
         resp.raise_for_status()
         bindings = resp.json().get('results', {}).get('bindings', [])
@@ -202,7 +209,7 @@ SELECT ?filmLabel ?directorLabel ?publicationDate ?genreLabel WHERE {
 
 
 def get_movie_data(movie_name, year=None):
-    """Search IMDb suggestions, then enrich with Wikidata."""
+    """Search IMDb suggestions, then enrich with Wikidata or IMDb scrape."""
     try:
         print(f"  → Searching IMDb...")
         suggestions = search_imdb_suggestions(movie_name, year)
@@ -216,10 +223,23 @@ def get_movie_data(movie_name, year=None):
                 imdb_id, fallback_title=suggestion_title, fallback_year=suggestion_year)
 
             if has_usable_movie_metadata(movie_data):
-                # Prefer IMDb suggestion title if Wikidata returned something shorter/incomplete
+                # Prefer IMDb suggestion title if Wikidata returned something shorter
                 if suggestion_title and len(suggestion_title) > len(movie_data.get('title', '')):
                     movie_data['title'] = suggestion_title
+                # Fix Unknown director via IMDb scrape
+                dirs = movie_data.get('director', [])
+                if not dirs or dirs[0].get('name') == 'Unknown':
+                    _, _, scraped_dirs = scrape_imdb_page(imdb_id)
+                    if scraped_dirs and scraped_dirs != ['Unknown']:
+                        movie_data['director'] = [{'name': d} for d in scraped_dirs]
                 return movie_data
+
+            # Wikidata failed — try IMDb scrape for this ID
+            title, yr, directors = scrape_imdb_page(imdb_id)
+            if title:
+                return build_movie_data(imdb_id=imdb_id, title=title,
+                                        year=yr or (int(suggestion_year) if suggestion_year else None),
+                                        directors=directors)
 
             if suggestion_title and suggestion_year:
                 return build_movie_data(imdb_id=imdb_id, title=suggestion_title,
@@ -230,13 +250,65 @@ def get_movie_data(movie_name, year=None):
         return None
 
 
+def scrape_imdb_page(imdb_id):
+    """Scrape title, year, directors from IMDb page JSON-LD."""
+    try:
+        url = f"https://www.imdb.com/title/tt{imdb_id}/"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml'
+        }
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        # Force UTF-8 decoding
+        resp.encoding = 'utf-8'
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                raw = script.string or script.get_text()
+                if not raw:
+                    continue
+                data = json.loads(raw)
+                title = data.get('name')
+                year_str = (data.get('datePublished') or '')[:4]
+                year = int(year_str) if year_str.isdigit() else None
+                directors = []
+                for d in (data.get('director') or []):
+                    if isinstance(d, dict) and d.get('name'):
+                        directors.append(d['name'])
+                if title:
+                    return title, year, directors or ['Unknown']
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"  IMDb scrape error: {e}")
+    return None, None, None
+
+
 def fetch_movie_by_imdb_id(imdb_id, default_title="", default_year=None):
     normalized = imdb_id.replace('tt', '').strip()
-    movie_data = get_movie_data_from_wikidata(normalized,
-                                              fallback_title=default_title,
-                                              fallback_year=default_year)
+
+    # Try Wikidata first (don't pass noisy filename as fallback)
+    movie_data = get_movie_data_from_wikidata(normalized, fallback_title=None, fallback_year=default_year)
     if has_usable_movie_metadata(movie_data):
+        # Fix Unknown director via IMDb scrape
+        directors = movie_data.get('director', [])
+        if not directors or directors[0].get('name') == 'Unknown':
+            title, year, scraped_dirs = scrape_imdb_page(normalized)
+            if scraped_dirs and scraped_dirs != ['Unknown']:
+                movie_data['director'] = [{'name': d} for d in scraped_dirs]
+            if title and not movie_data.get('title'):
+                movie_data['title'] = title
         return movie_data
+
+    # Wikidata failed — scrape IMDb page directly for clean title + director
+    title, year, directors = scrape_imdb_page(normalized)
+    if title:
+        return build_movie_data(imdb_id=normalized, title=title,
+                                year=year or (int(default_year) if default_year else None),
+                                directors=directors)
+
     print("  Could not fetch metadata for that ID.")
     return None
 
@@ -276,7 +348,7 @@ def cleanup_directory(directory_path, auto_delete=True):
                 pass
 
 
-def organize_movie(file, movie_data, dest_root):
+def organize_movie(file, movie_data, dest_root, scan_root):
     """Move file to dest_root/Director/Year - Title/Title.ext with NFC filenames."""
     directors = movie_data.get('director', [])
     director_names = ', '.join(d['name'] for d in directors) if directors else 'Unknown'
@@ -296,10 +368,9 @@ def organize_movie(file, movie_data, dest_root):
 
     cleanup_directory(dest_dir, auto_delete=True)
 
-    # Remove now-empty parent dirs
+    # Remove now-empty parent dirs up to (but not including) the scan root
     parent = os.path.dirname(file)
-    source_root = os.path.dirname(dest_root)  # don't go above Films root
-    while parent != source_root and os.path.exists(parent):
+    while os.path.abspath(parent) != os.path.abspath(scan_root) and os.path.exists(parent):
         try:
             if not os.listdir(parent):
                 os.rmdir(parent)
@@ -415,14 +486,17 @@ def main():
                 if not imdb_id:
                     print("⊘ Skipped.")
                     break
-                movie_data = fetch_movie_by_imdb_id(imdb_id, default_title=movie_name, default_year=year)
-                if not movie_data:
-                    print("  Could not fetch — try again or skip.")
-                    continue
-                directors = movie_data.get('director', [])
-                director_str = ', '.join(d['name'] for d in directors) if directors else 'Unknown'
-                print(f"Found: {movie_data.get('title')} ({movie_data.get('year')}) — {director_str}")
-                print(f"IMDb: https://www.imdb.com/title/tt{movie_data.movieID}/")
+                new_data = fetch_movie_by_imdb_id(imdb_id, default_title=movie_name, default_year=year)
+                if not new_data:
+                    print("  Could not fetch — keeping previous match (if any). Try again or skip.")
+                else:
+                    movie_data = new_data
+                if movie_data:
+                    directors = movie_data.get('director', [])
+                    director_str = ', '.join(d['name'] for d in directors) if directors else 'Unknown'
+                    print(f"Found: {movie_data.get('title')} ({movie_data.get('year')}) — {director_str}")
+                    if movie_data.movieID:
+                        print(f"IMDb: https://www.imdb.com/title/tt{movie_data.movieID}/")
                 # Loop again to ask destination
 
             elif choice in dest_map:
@@ -441,7 +515,7 @@ def main():
                 # Move subtitle if present
                 sub = find_subtitle(os.path.dirname(file), original_name)
 
-                organize_movie(file, movie_data, dest_root)
+                organize_movie(file, movie_data, dest_root, scan_root=folder_path)
                 if sub:
                     move_subtitle(sub, dest_dir, title)
 
@@ -454,4 +528,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-# /Volumes/Films/ToOrganise/
